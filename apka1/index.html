@@ -575,11 +575,22 @@
     });
 
     document.addEventListener("keydown", async (event) => {
+      const target = event.target;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+
       if (event.ctrlKey || event.altKey || event.metaKey || event.key.length !== 1) {
         return;
       }
 
-      typedBuffer = `${typedBuffer}${event.key.toLowerCase()}`.slice(-SECRET_TYPE_SEQUENCE.length);
+      const nextBuffer = `${typedBuffer}${event.key.toLowerCase()}`.slice(-SECRET_TYPE_SEQUENCE.length);
+      const isMatchingPrefix = SECRET_TYPE_SEQUENCE.startsWith(nextBuffer);
+      if (isMatchingPrefix) {
+        event.preventDefault();
+      }
+
+      typedBuffer = nextBuffer;
       if (typedBuffer !== SECRET_TYPE_SEQUENCE || isAdminLoggedIn()) {
         return;
       }
