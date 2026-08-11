@@ -288,7 +288,7 @@
       <img src="../favicon.png?v=129" alt="Astro AI Plus">
       <div>
         <h1>Astro AI Plus</h1>
-        <p class="desc">Narzędzie do obróbki astrofotografiicznej, analizy i z pomocą AI i tworzenia animacji 3D.</p>
+        <p class="desc">Narzędzie do obróbki astrofotografiicznej, analizy z pomocą AI i tworzenia animacji 3D.</p>
       </div>
     </section>
 
@@ -367,7 +367,7 @@
     const ADMIN_TOKEN_KEY = "astro_ai_plus_admin_token";
     const VERSION_STORAGE_KEY = "astro_ai_plus_versions";
     const LOCAL_ADMIN_HASH = "8b32f2fa6401eb1ec35d95d078201c9a0169de4297a7466daf3984cbda358a9b";
-    const SECRET_TYPE_SEQUENCE = "delta1/6";
+    let secretTypeSequence = "delta1/6";
     let typedBuffer = "";
     let dataMode = "api";
 
@@ -485,6 +485,27 @@
         dataMode = "local";
         msg.textContent = "Tryb lokalny: API niedostepne, dane sa zapisywane w tej przegladarce.";
         return loadLocalVersions();
+      }
+    }
+
+    function normalizeShortcut(value) {
+      const shortcut = String(value || "").trim().toLowerCase();
+      if (!shortcut || shortcut.length > 64) {
+        return "delta1/6";
+      }
+      return shortcut;
+    }
+
+    async function loadShortcut() {
+      if (dataMode === "local") {
+        return;
+      }
+
+      try {
+        const payload = await apiRequest("/api/settings", { method: "GET" });
+        secretTypeSequence = normalizeShortcut(payload && payload.shortcut);
+      } catch {
+        secretTypeSequence = "delta1/6";
       }
     }
 
@@ -676,14 +697,14 @@
         return;
       }
 
-      const nextBuffer = `${typedBuffer}${event.key.toLowerCase()}`.slice(-SECRET_TYPE_SEQUENCE.length);
-      const isMatchingPrefix = SECRET_TYPE_SEQUENCE.startsWith(nextBuffer);
+      const nextBuffer = `${typedBuffer}${event.key.toLowerCase()}`.slice(-secretTypeSequence.length);
+      const isMatchingPrefix = secretTypeSequence.startsWith(nextBuffer);
       if (isMatchingPrefix) {
         event.preventDefault();
       }
 
       typedBuffer = nextBuffer;
-      if (typedBuffer !== SECRET_TYPE_SEQUENCE || isAdminLoggedIn()) {
+      if (typedBuffer !== secretTypeSequence || isAdminLoggedIn()) {
         return;
       }
 
@@ -782,6 +803,7 @@
     (async () => {
       try {
         versions = await loadVersions();
+        await loadShortcut();
         setAdminUi(isAdminLoggedIn());
         renderVersions();
       } catch (error) {

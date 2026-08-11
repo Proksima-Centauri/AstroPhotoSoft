@@ -6,9 +6,13 @@ const crypto = require("crypto");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8080);
 const ROOT_DIR = __dirname;
-const DATA_FILE = path.join(ROOT_DIR, "protected", "versions.json");
+const DATA_DIR = path.join(ROOT_DIR, "protected");
+const VERSIONS_FILE = path.join(DATA_DIR, "versions.json");
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
+const LOGIN_EVENTS_FILE = path.join(DATA_DIR, "login-events.json");
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "8b32f2fa6401eb1ec35d95d078201c9a0169de4297a7466daf3984cbda358a9b";
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
+const MAX_LOGIN_EVENTS = 500;
 
 const sessions = new Map();
 
@@ -34,6 +38,10 @@ const defaultVersions = [
   }
 ];
 
+const defaultSettings = {
+  shortcut: "delta1/6"
+};
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
@@ -51,6 +59,18 @@ function safeReadJson(filePath, fallbackValue) {
   } catch {
     return fallbackValue;
   }
+}
+
+function saveJson(filePath, value) {
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function normalizeShortcut(value) {
+  const shortcut = String(value || "").trim().toLowerCase();
+  if (!shortcut || shortcut.length > 64 || /\s/.test(shortcut)) {
+    return null;
+  }
+  return shortcut;
 }
 
 function normalizeVersion(entry) {
@@ -79,7 +99,7 @@ function normalizeVersion(entry) {
 }
 
 function loadVersions() {
-  const loaded = safeReadJson(DATA_FILE, defaultVersions);
+  const loaded = safeReadJson(VERSIONS_FILE, defaultVersions);
   if (!Array.isArray(loaded)) {
     return [...defaultVersions];
   }
@@ -93,16 +113,48 @@ function loadVersions() {
 }
 
 function saveVersions(versions) {
-  fs.writeFileSync(DATA_FILE, `${JSON.stringify(versions, null, 2)}\n`, "utf8");
+  saveJson(VERSIONS_FILE, versions);
 }
 
-function ensureDataFile() {
-  const parentDir = path.dirname(DATA_FILE);
-  if (!fs.existsSync(parentDir)) {
-    fs.mkdirSync(parentDir, { recursive: true });
+function loadSettings() {
+  const loaded = safeReadJson(SETTINGS_FILE, defaultSettings);
+  const shortcut = normalizeShortcut(loaded && loaded.shortcut);
+  return {
+    shortcut: shortcut || defaultSettings.shortcut
+  };
+}
+
+function saveSettings(settings) {
+  saveJson(SETTINGS_FILE, settings);
+}
+
+function loadLoginEvents() {
+  const loaded = safeReadJson(LOGIN_EVENTS_FILE, []);
+  if (!Array.isArray(loaded)) {
+    return [];
   }
-  if (!fs.existsSync(DATA_FILE)) {
+  return loaded.filter((item) => item && typeof item === "object").slice(0, MAX_LOGIN_EVENTS);
+}
+
+function saveLoginEvents(events) {
+  saveJson(LOGIN_EVENTS_FILE, events.slice(0, MAX_LOGIN_EVENTS));
+}
+
+function ensureDataFiles() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  if (!fs.existsSync(VERSIONS_FILE)) {
     saveVersions(defaultVersions);
+  }
+
+  if (!fs.existsSync(SETTINGS_FILE)) {
+    saveSettings(defaultSettings);
+  }
+
+  if (!fs.existsSync(LOGIN_EVENTS_FILE)) {
+    saveLoginEvents([]);
   }
 }
 
@@ -162,7 +214,127 @@ function hashValue(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function parseBrowser(userAgent) {
+  const ua = String(userAgent || "");
+  if (/Edg\//i.test(ua)) return "Edge";
+  if (/OPR\//i.test(ua)) return "Opera";
+  if (/Firefox\//i.test(ua)) return "Firefox";
+  if (/Chrome\//i.test(ua)) return "Chrome";
+  if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) return "Safari";
+  return "Unknown";
+}
+
+function parseOs(userAgent) {
+  const ua = String(userAgent || "");
+  if (/Windows/i.test(ua)) return "Windows";
+  if (/Android/i.test(ua)) return "Android";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "macOS";
+  if (/Linux/i.test(ua)) return "Linux";
+  return "Unknown";
+}
+
+function normalizeIp(ip) {
+  const value = String(ip || "").trim();
+  if (!value) {
+    return "unknown";
+  }
+
+  if (value.startsWith("::ffff:")) {
+    return value.replace("::ffff:", "");
+  }
+
+  return value;
+}
+
+function getClientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const ip = forwarded || req.socket.remoteAddress || "";
+  return normalizeIp(ip);
+}
+
+function isPrivateIp(ip) {
+  if (ip === "unknown" || ip === "::1" || ip === "127.0.0.1") {
+    return true;
+  }
+
+  if (/^10\./.test(ip) || /^192\.168\./.test(ip)) {
+    return true;
+  }
+
+  const match172 = ip.match(/^172\.(\d+)\./);
+  if (match172) {
+    const second = Number(match172[1]);
+    if (second >= 16 && second <= 31) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function lookupGeo(ip) {
+  if (isPrivateIp(ip)) {
+    return { city: "Local", country: "Local" };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    const response = await fetch(`https://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,city`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      return { city: "Unknown", country: "Unknown" };
+    }
+
+    const payload = await response.json();
+    if (!payload || payload.status !== "success") {
+      return { city: "Unknown", country: "Unknown" };
+    }
+
+    return {
+      city: String(payload.city || "Unknown"),
+      country: String(payload.country || "Unknown")
+    };
+  } catch {
+    clearTimeout(timeout);
+    return { city: "Unknown", country: "Unknown" };
+  }
+}
+
+async function recordLoginEvent(req, status) {
+  const ip = getClientIp(req);
+  const ua = String(req.headers["user-agent"] || "");
+  const geo = await lookupGeo(ip);
+  const now = new Date();
+
+  const event = {
+    id: `evt-${Date.now()}-${crypto.randomUUID()}`,
+    timestamp: now.toISOString(),
+    time: now.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }),
+    os: parseOs(ua),
+    browser: parseBrowser(ua),
+    city: geo.city,
+    country: geo.country,
+    ip,
+    status
+  };
+
+  const events = [event, ...loadLoginEvents()].slice(0, MAX_LOGIN_EVENTS);
+  saveLoginEvents(events);
+}
+
 function routeApi(req, res, requestUrl) {
+  if (req.method === "GET" && requestUrl.pathname === "/api/settings") {
+    const settings = loadSettings();
+    sendJson(res, 200, { shortcut: settings.shortcut });
+    return;
+  }
+
   if (req.method === "GET" && requestUrl.pathname === "/api/versions") {
     const versions = loadVersions();
     sendJson(res, 200, { versions });
@@ -175,12 +347,16 @@ function routeApi(req, res, requestUrl) {
         const password = String(body.password || "");
         const isValid = hashValue(password) === ADMIN_PASSWORD_HASH;
         if (!isValid) {
+          recordLoginEvent(req, "failed").catch(() => {
+          });
           sendJson(res, 401, { error: "Bledne haslo admina." });
           return;
         }
 
         const token = crypto.randomUUID();
         sessions.set(token, Date.now() + TOKEN_TTL_MS);
+        recordLoginEvent(req, "success").catch(() => {
+        });
         sendJson(res, 200, { token });
       })
       .catch((error) => sendJson(res, 400, { error: error.message }));
@@ -193,6 +369,39 @@ function routeApi(req, res, requestUrl) {
       sessions.delete(token);
     }
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/admin/login-events") {
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { error: "Brak autoryzacji." });
+      return;
+    }
+
+    const limit = Math.max(1, Math.min(MAX_LOGIN_EVENTS, Number(requestUrl.searchParams.get("limit") || 200)));
+    const events = loadLoginEvents().slice(0, limit);
+    sendJson(res, 200, { events });
+    return;
+  }
+
+  if (req.method === "PUT" && requestUrl.pathname === "/api/settings/shortcut") {
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { error: "Brak autoryzacji." });
+      return;
+    }
+
+    readBody(req)
+      .then((body) => {
+        const shortcut = normalizeShortcut(body.shortcut);
+        if (!shortcut) {
+          sendJson(res, 400, { error: "Niepoprawny skrot." });
+          return;
+        }
+
+        saveSettings({ shortcut });
+        sendJson(res, 200, { shortcut });
+      })
+      .catch((error) => sendJson(res, 400, { error: error.message }));
     return;
   }
 
@@ -306,7 +515,7 @@ function serveStatic(req, res, requestUrl) {
   });
 }
 
-ensureDataFile();
+ensureDataFiles();
 
 const server = http.createServer((req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
