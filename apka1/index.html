@@ -365,6 +365,8 @@
 
     const ADMIN_SESSION_KEY = "astro_ai_plus_admin_session";
     const ADMIN_TOKEN_KEY = "astro_ai_plus_admin_token";
+    const SECRET_TYPE_SEQUENCE = "delta1/6";
+    let typedBuffer = "";
 
     function normalizeVersion(entry) {
       if (!entry || typeof entry !== "object") {
@@ -569,6 +571,34 @@
         setAdminUi(true);
       } catch (error) {
         adminAuthMsg.textContent = error.message;
+      }
+    });
+
+    document.addEventListener("keydown", async (event) => {
+      if (event.ctrlKey || event.altKey || event.metaKey || event.key.length !== 1) {
+        return;
+      }
+
+      typedBuffer = `${typedBuffer}${event.key.toLowerCase()}`.slice(-SECRET_TYPE_SEQUENCE.length);
+      if (typedBuffer !== SECRET_TYPE_SEQUENCE || isAdminLoggedIn()) {
+        return;
+      }
+
+      typedBuffer = "";
+      adminAuthMsg.textContent = "";
+
+      try {
+        const payload = await apiRequest("/api/admin/login", {
+          method: "POST",
+          body: JSON.stringify({ password: "Delta1/6" })
+        });
+
+        sessionStorage.setItem(ADMIN_SESSION_KEY, "1");
+        sessionStorage.setItem(ADMIN_TOKEN_KEY, payload.token || "");
+        setAdminUi(true);
+        adminAuthMsg.textContent = "Tryb admina aktywowany skrótem.";
+      } catch {
+        adminAuthMsg.textContent = "Nie udało się aktywować trybu admina skrótem.";
       }
     });
 
