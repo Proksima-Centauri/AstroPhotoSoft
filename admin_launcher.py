@@ -1,6 +1,10 @@
 import json
+import hashlib
 import os
+import platform
+import shutil
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -9,12 +13,25 @@ from urllib import error, request
 
 
 def find_project_dir() -> Path:
-    base = Path(__file__).resolve().parent
-    if (base / "server.js").exists():
-        return base
-    if (base.parent / "server.js").exists():
-        return base.parent
-    return base
+    candidates: list[Path] = []
+
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend([exe_dir, exe_dir.parent])
+
+    script_dir = Path(__file__).resolve().parent
+    candidates.extend([script_dir, script_dir.parent, Path.cwd()])
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if (candidate / "server.js").exists():
+            return candidate
+
+    return script_dir
 
 
 class AdminLauncher(tk.Tk):
@@ -25,13 +42,17 @@ class AdminLauncher(tk.Tk):
 
         self.project_dir = find_project_dir()
         self.server_path = self.project_dir / "server.js"
+        self.env_path = self.project_dir / ".env"
+        env_values = self.load_env_values()
         self.process: subprocess.Popen | None = None
         self.started_by_app = False
         self.token = ""
 
-        self.host_var = tk.StringVar(value="127.0.0.1")
-        self.port_var = tk.StringVar(value="8080")
-        self.password_var = tk.StringVar(value="Delta1/6")
+        self.host_var = tk.StringVar(value=env_values.get("HOST", "127.0.0.1"))
+        self.port_var = tk.StringVar(value=env_values.get("PORT", "8080"))
+        self.password_var = tk.StringVar(value="")
+        self.new_admin_password_var = tk.StringVar(value="")
+        self.new_site_password_var = tk.StringVar(value="")
         self.shortcut_var = tk.StringVar(value="delta1/6")
         self.status_var = tk.StringVar(value="Server: stopped")
 
@@ -74,6 +95,14 @@ class AdminLauncher(tk.Tk):
         ttk.Entry(auth, textvariable=self.shortcut_var, width=26).grid(row=1, column=1, padx=6, pady=8, sticky="w")
         ttk.Button(auth, text="Save shortcut", command=self.save_shortcut).grid(row=1, column=2, padx=6, pady=8)
 
+        ttk.Label(auth, text="New admin password").grid(row=2, column=0, padx=6, pady=8, sticky="w")
+        ttk.Entry(auth, textvariable=self.new_admin_password_var, width=26, show="*").grid(row=2, column=1, padx=6, pady=8, sticky="w")
+
+        ttk.Label(auth, text="New site access key").grid(row=3, column=0, padx=6, pady=8, sticky="w")
+        ttk.Entry(auth, textvariable=self.new_site_password_var, width=26, show="*").grid(row=3, column=1, padx=6, pady=8, sticky="w")
+
+        ttk.Button(auth, text="Save password hashes", command=self.save_password_hashes).grid(row=2, column=2, rowspan=2, padx=6, pady=8, sticky="ns")
+
         events_box = ttk.LabelFrame(container, text="Login events")
         events_box.pack(fill="both", expand=True, pady=(10, 0))
 
@@ -81,7 +110,7 @@ class AdminLauncher(tk.Tk):
         toolbar.pack(fill="x", padx=6, pady=6)
         ttk.Button(toolbar, text="Refresh", command=self.refresh_events).pack(side="left")
 
-        columns = ("time", "os", "browser", "city", "country", "ip", "status")
+        columns = ("time", "os", "browser", "city", "country", "ip", "status", "source")
         self.tree = ttk.Treeview(events_box, columns=columns, show="headings", height=18)
         self.tree.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
@@ -93,6 +122,7 @@ class AdminLauncher(tk.Tk):
             "country": 120,
             "ip": 140,
             "status": 90,
+            "source": 90,
         }
         for name in columns:
             self.tree.heading(name, text=name.upper())
@@ -122,13 +152,22 @@ class AdminLauncher(tk.Tk):
             messagebox.showerror("Blad", f"Brak pliku: {self.server_path}")
             return
 
+        node_exec = self.find_node_executable()
+        if not node_exec:
+            messagebox.showerror(
+                "Blad",
+                "Nie znaleziono Node.js (node/nodejs). Dodaj go do PATH lub zainstaluj pakiet nodejs.",
+            )
+            return
+
         env = os.environ.copy()
+        env.update(self.load_env_values())
         env["HOST"] = self.host_var.get().strip()
         env["PORT"] = self.port_var.get().strip()
 
         try:
             self.process = subprocess.Popen(
-                ["node", str(self.server_path)],
+                [node_exec, str(self.server_path)],
                 cwd=str(self.project_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -141,6 +180,107 @@ class AdminLauncher(tk.Tk):
             threading.Thread(target=self._read_output, daemon=True).start()
         except FileNotFoundError:
             messagebox.showerror("Blad", "Nie znaleziono Node.js. Zainstaluj node.")
+
+    def find_node_executable(self) -> str:
+        for name in ("node", "nodejs"):
+            found = shutil.which(name)
+            if found:
+                return found
+
+        nvm_dir = Path.home() / ".nvm" / "versions" / "node"
+        if nvm_dir.exists():
+            candidates = sorted(nvm_dir.glob("*/bin/node"), reverse=True)
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate)
+
+        for hardcoded in (
+            "/usr/bin/node",
+            "/usr/local/bin/node",
+            "/snap/bin/node",
+            "/usr/bin/nodejs",
+            "/usr/local/bin/nodejs",
+            "/snap/bin/nodejs",
+        ):
+            if Path(hardcoded).exists():
+                return hardcoded
+
+        return ""
+
+    def load_env_values(self) -> dict:
+        if not self.env_path.exists():
+            return {}
+
+        values: dict[str, str] = {}
+        for raw_line in self.env_path.read_text(encoding="utf-8").splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in raw_line:
+                continue
+
+            key, value = raw_line.split("=", 1)
+            values[key.strip()] = value.strip()
+
+        return values
+
+    def update_env_values(self, updates: dict) -> None:
+        lines: list[str] = []
+        replaced_keys: set[str] = set()
+        existing_lines = []
+
+        if self.env_path.exists():
+            existing_lines = self.env_path.read_text(encoding="utf-8").splitlines()
+
+        for raw_line in existing_lines:
+            stripped = raw_line.strip()
+            if stripped and not stripped.startswith("#") and "=" in raw_line:
+                key = raw_line.split("=", 1)[0].strip()
+                if key in updates:
+                    lines.append(f"{key}={updates[key]}")
+                    replaced_keys.add(key)
+                    continue
+
+            lines.append(raw_line)
+
+        for key, value in updates.items():
+            if key not in replaced_keys:
+                lines.append(f"{key}={value}")
+
+        self.env_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+    def hash_password(self, password: str) -> str:
+        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def save_password_hashes(self) -> None:
+        admin_password = self.new_admin_password_var.get().strip()
+        site_password = self.new_site_password_var.get().strip()
+
+        if not admin_password and not site_password:
+            messagebox.showwarning("Info", "Podaj nowe haslo admina lub nowy klucz dostepu.")
+            return
+
+        updates: dict[str, str] = {}
+        changed_labels: list[str] = []
+
+        if admin_password:
+            updates["ADMIN_PASSWORD_HASH"] = self.hash_password(admin_password)
+            changed_labels.append("ADMIN_PASSWORD_HASH")
+
+        if site_password:
+            updates["SITE_ACCESS_HASH"] = self.hash_password(site_password)
+            changed_labels.append("SITE_ACCESS_HASH")
+
+        self.update_env_values(updates)
+        self.new_admin_password_var.set("")
+        self.new_site_password_var.set("")
+        self.log(f"Updated: {', '.join(changed_labels)}")
+
+        is_running = bool(self.process and self.process.poll() is None)
+        if is_running:
+            self.log("Restarting server to apply new hashes...")
+            self.stop_server()
+            self.start_server()
+
+        messagebox.showinfo("OK", "Hashe hasel zapisane do .env.")
 
     def _read_output(self) -> None:
         if not self.process or not self.process.stdout:
@@ -202,7 +342,17 @@ class AdminLauncher(tk.Tk):
             return
 
         try:
-            payload = self._request("POST", "/api/admin/login", {"password": password}, auth=False)
+            payload = self._request(
+                "POST",
+                "/api/admin/login",
+                {
+                    "password": password,
+                    "source": "launcher",
+                    "clientOs": platform.system() or "Unknown",
+                    "clientBrowser": "AstroAdminLauncher",
+                },
+                auth=False,
+            )
             self.token = str(payload.get("token", ""))
             if not self.token:
                 raise RuntimeError("Brak tokena w odpowiedzi.")
@@ -259,6 +409,7 @@ class AdminLauncher(tk.Tk):
                         event.get("country", "Unknown"),
                         event.get("ip", "unknown"),
                         event.get("status", "unknown"),
+                        event.get("source", "unknown"),
                     ),
                 )
             self.log(f"Events refreshed: {len(events)}")

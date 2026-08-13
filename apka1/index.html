@@ -365,23 +365,6 @@
 
     const ADMIN_SESSION_KEY = "astro_ai_plus_admin_session";
     const ADMIN_TOKEN_KEY = "astro_ai_plus_admin_token";
-    const VERSION_STORAGE_KEY = "astro_ai_plus_versions";
-    const LOCAL_ADMIN_HASH = "8b32f2fa6401eb1ec35d95d078201c9a0169de4297a7466daf3984cbda358a9b";
-    let secretTypeSequence = "delta1/6";
-    let typedBuffer = "";
-    let dataMode = "api";
-
-    const defaultVersions = [
-      {
-        id: "linux-stable-1",
-        version: "1.0.0",
-        system: "Linux (x86_64)",
-        format: "skrypt startowy (przykladowy pakiet)",
-        href: "../downloads/astro-ai-plus-linux.sh",
-        linuxOnly: true,
-        notes: "Wydanie startowe"
-      }
-    ];
 
     function normalizeVersion(entry) {
       if (!entry || typeof entry !== "object") {
@@ -436,104 +419,46 @@
       return payload;
     }
 
-    async function sha256(value) {
-      const bytes = new TextEncoder().encode(value);
-      const hash = await crypto.subtle.digest("SHA-256", bytes);
-      return [...new Uint8Array(hash)].map((x) => x.toString(16).padStart(2, "0")).join("");
-    }
-
-    function saveLocalVersions(nextVersions) {
-      localStorage.setItem(VERSION_STORAGE_KEY, JSON.stringify(nextVersions));
-    }
-
-    function loadLocalVersions() {
-      const raw = localStorage.getItem(VERSION_STORAGE_KEY);
-      if (!raw) {
-        saveLocalVersions(defaultVersions);
-        return [...defaultVersions];
-      }
-
-      try {
-        const parsed = JSON.parse(raw);
-        const items = Array.isArray(parsed) ? parsed : [];
-        const cleaned = items.map(normalizeVersion).filter(Boolean);
-        if (cleaned.length === 0) {
-          saveLocalVersions(defaultVersions);
-          return [...defaultVersions];
-        }
-        return cleaned;
-      } catch {
-        saveLocalVersions(defaultVersions);
-        return [...defaultVersions];
-      }
-    }
-
-    function createVersionId() {
-      return `release-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-    }
-
     async function loadVersions() {
-      if (dataMode === "local") {
-        return loadLocalVersions();
-      }
-
-      try {
-        const payload = await apiRequest("/api/versions", { method: "GET" });
-        const items = Array.isArray(payload && payload.versions) ? payload.versions : [];
-        return items.map(normalizeVersion).filter(Boolean);
-      } catch {
-        dataMode = "local";
-        msg.textContent = "Tryb lokalny: API niedostepne, dane sa zapisywane w tej przegladarce.";
-        return loadLocalVersions();
-      }
+      const payload = await apiRequest("/api/versions", { method: "GET" });
+      const items = Array.isArray(payload && payload.versions) ? payload.versions : [];
+      return items.map(normalizeVersion).filter(Boolean);
     }
 
-    function normalizeShortcut(value) {
-      const shortcut = String(value || "").trim().toLowerCase();
-      if (!shortcut || shortcut.length > 64) {
-        return "delta1/6";
-      }
-      return shortcut;
+    function detectClientInfo() {
+      const ua = navigator.userAgent || "";
+      let os = "Unknown";
+      if (/Windows/i.test(ua)) os = "Windows";
+      else if (/Android/i.test(ua)) os = "Android";
+      else if (/iPhone|iPad|iPod/i.test(ua)) os = "iOS";
+      else if (/Mac OS X|Macintosh/i.test(ua)) os = "macOS";
+      else if (/Linux/i.test(ua)) os = "Linux";
+
+      let browser = "Unknown";
+      if (/Edg\//i.test(ua)) browser = "Edge";
+      else if (/OPR\//i.test(ua)) browser = "Opera";
+      else if (/Firefox\//i.test(ua)) browser = "Firefox";
+      else if (/Chrome\//i.test(ua)) browser = "Chrome";
+      else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) browser = "Safari";
+
+      return { os, browser };
     }
 
-    async function loadShortcut() {
-      if (dataMode === "local") {
-        return;
-      }
-
-      try {
-        const payload = await apiRequest("/api/settings", { method: "GET" });
-        secretTypeSequence = normalizeShortcut(payload && payload.shortcut);
-      } catch {
-        secretTypeSequence = "delta1/6";
-      }
-    }
-
-    async function loginAdmin(password) {
-      if (dataMode === "local") {
-        if (!window.crypto || !window.crypto.subtle) {
-          throw new Error("Twoja przegladarka nie wspiera bezpiecznego logowania.");
-        }
-
-        const hash = await sha256(password);
-        if (hash !== LOCAL_ADMIN_HASH) {
-          throw new Error("Bledne haslo admina.");
-        }
-
-        return { token: `local-${Date.now()}` };
-      }
+    async function loginAdmin(password, source = "form") {
+      const client = detectClientInfo();
 
       return apiRequest("/api/admin/login", {
         method: "POST",
-        body: JSON.stringify({ password })
+        body: JSON.stringify({
+          password,
+          source,
+          clientOs: client.os,
+          clientBrowser: client.browser
+        })
       });
     }
 
     async function logoutAdmin() {
-      if (dataMode === "local") {
-        return;
-      }
-
       await apiRequest("/api/admin/logout", { method: "POST" });
     }
 
@@ -629,13 +554,8 @@
           deleteButton.textContent = "Usuń";
           deleteButton.addEventListener("click", async () => {
             try {
-              if (dataMode === "local") {
-                versions = versions.filter((v) => v.id !== item.id);
-                saveLocalVersions(versions);
-              } else {
-                const payload = await apiRequest(`/api/versions/${encodeURIComponent(item.id)}`, { method: "DELETE" });
-                versions = Array.isArray(payload.versions) ? payload.versions.map(normalizeVersion).filter(Boolean) : versions;
-              }
+              const payload = await apiRequest(`/api/versions/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+              versions = Array.isArray(payload.versions) ? payload.versions.map(normalizeVersion).filter(Boolean) : versions;
 
               if (editingVersionId === item.id) {
                 clearVersionForm();
@@ -675,7 +595,7 @@
       adminAuthMsg.textContent = "";
 
       try {
-        const payload = await loginAdmin(adminPassword.value.trim());
+        const payload = await loginAdmin(adminPassword.value.trim(), "form");
 
         sessionStorage.setItem(ADMIN_SESSION_KEY, "1");
         sessionStorage.setItem(ADMIN_TOKEN_KEY, payload.token || "");
@@ -684,42 +604,6 @@
         setAdminUi(true);
       } catch (error) {
         adminAuthMsg.textContent = error.message;
-      }
-    });
-
-    document.addEventListener("keydown", async (event) => {
-      const target = event.target;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        return;
-      }
-
-      if (event.ctrlKey || event.altKey || event.metaKey || event.key.length !== 1) {
-        return;
-      }
-
-      const nextBuffer = `${typedBuffer}${event.key.toLowerCase()}`.slice(-secretTypeSequence.length);
-      const isMatchingPrefix = secretTypeSequence.startsWith(nextBuffer);
-      if (isMatchingPrefix) {
-        event.preventDefault();
-      }
-
-      typedBuffer = nextBuffer;
-      if (typedBuffer !== secretTypeSequence || isAdminLoggedIn()) {
-        return;
-      }
-
-      typedBuffer = "";
-      adminAuthMsg.textContent = "";
-
-      try {
-        const payload = await loginAdmin("Delta1/6");
-
-        sessionStorage.setItem(ADMIN_SESSION_KEY, "1");
-        sessionStorage.setItem(ADMIN_TOKEN_KEY, payload.token || "");
-        setAdminUi(true);
-        adminAuthMsg.textContent = "Tryb admina aktywowany skrótem.";
-      } catch {
-        adminAuthMsg.textContent = "Nie udało się aktywować trybu admina skrótem.";
       }
     });
 
@@ -766,31 +650,20 @@
 
       try {
         if (editingVersionId) {
-          if (dataMode === "local") {
-            versions = versions.map((entry) => entry.id === editingVersionId ? { ...versionPayload, id: editingVersionId } : entry);
-            saveLocalVersions(versions);
-          } else {
-            const payload = await apiRequest(`/api/versions/${encodeURIComponent(editingVersionId)}`, {
-              method: "PUT",
-              body: JSON.stringify(versionPayload)
-            });
-            versions = Array.isArray(payload.versions) ? payload.versions.map(normalizeVersion).filter(Boolean) : versions;
-          }
+          const payload = await apiRequest(`/api/versions/${encodeURIComponent(editingVersionId)}`, {
+            method: "PUT",
+            body: JSON.stringify(versionPayload)
+          });
+          versions = Array.isArray(payload.versions) ? payload.versions.map(normalizeVersion).filter(Boolean) : versions;
           renderVersions();
           adminToolsMsg.textContent = `Zapisano zmiany w wersji ${versionPayload.version}.`;
           clearVersionForm();
         } else {
-          if (dataMode === "local") {
-            const nextEntry = { ...versionPayload, id: createVersionId() };
-            versions = [nextEntry, ...versions];
-            saveLocalVersions(versions);
-          } else {
-            const payload = await apiRequest("/api/versions", {
-              method: "POST",
-              body: JSON.stringify(versionPayload)
-            });
-            versions = Array.isArray(payload.versions) ? payload.versions.map(normalizeVersion).filter(Boolean) : versions;
-          }
+          const payload = await apiRequest("/api/versions", {
+            method: "POST",
+            body: JSON.stringify(versionPayload)
+          });
+          versions = Array.isArray(payload.versions) ? payload.versions.map(normalizeVersion).filter(Boolean) : versions;
           renderVersions();
           adminToolsMsg.textContent = `Dodano wersję ${versionPayload.version}.`;
           clearVersionForm();
@@ -803,7 +676,6 @@
     (async () => {
       try {
         versions = await loadVersions();
-        await loadShortcut();
         setAdminUi(isAdminLoggedIn());
         renderVersions();
       } catch (error) {
