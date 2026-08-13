@@ -99,6 +99,43 @@
       </a>
     </main>
 
+    <section class="workshop-log" aria-labelledby="workshop-log-title">
+      <p class="workshop-log__kicker">OBSERWING LOG</p>
+      <h2 id="workshop-log-title">Latest from the workshop</h2>
+      <p class="workshop-log__intro">Small releases, shipped often. Re-download any time - newer is always better here.</p>
+
+      <div id="workshop-timeline" class="timeline" aria-live="polite"></div>
+      <p id="workshop-log-msg" class="workshop-log__status" aria-live="polite"></p>
+
+      <section class="workshop-admin">
+        <h3>Edycja wpisów (admin)</h3>
+        <p>Tylko admin może dodawać i edytować wpisy osi czasu.</p>
+
+        <form id="workshop-admin-login" class="workshop-admin-form">
+          <input id="workshop-admin-password" type="password" autocomplete="current-password" placeholder="Hasło admina" required>
+          <button type="submit">Zaloguj</button>
+        </form>
+        <p id="workshop-admin-auth-msg" class="workshop-log__status" aria-live="polite"></p>
+
+        <div id="workshop-admin-tools" class="workshop-admin-tools hidden">
+          <form id="workshop-entry-form" class="workshop-entry-form">
+            <div class="workshop-entry-row">
+              <input id="workshop-entry-year" type="number" min="1900" max="3000" placeholder="Rok, np. 2026" required>
+              <input id="workshop-entry-date" type="text" maxlength="32" placeholder="Data, np. AUGUST 12" required>
+            </div>
+            <input id="workshop-entry-title" type="text" maxlength="120" placeholder="Tytuł wpisu" required>
+            <textarea id="workshop-entry-description" maxlength="600" placeholder="Opis wpisu" required></textarea>
+            <div class="workshop-admin-actions">
+              <button id="workshop-entry-submit" type="submit">Dodaj wpis</button>
+              <button id="workshop-entry-cancel" type="button" class="secondary hidden">Anuluj edycję</button>
+              <button id="workshop-admin-logout" type="button" class="secondary">Wyloguj</button>
+            </div>
+          </form>
+          <p id="workshop-admin-tools-msg" class="workshop-log__status" aria-live="polite"></p>
+        </div>
+      </section>
+    </section>
+
     <section class="about">
       <h2>O mnie</h2>
       <p>AstroPhotoSoft to moje centrum projektów technologicznych i astrofotografii.</p>
@@ -107,7 +144,6 @@
 
   <script src="space.js"></script>
   <script>
-    const ACCESS_HASH = "8b32f2fa6401eb1ec35d95d078201c9a0169de4297a7466daf3984cbda358a9b";
     const SESSION_MINUTES = 5;
     const LOCKOUT_MS = 3000;
     const storageKey = "site_unlock_until";
@@ -118,11 +154,277 @@
     const input = document.getElementById("access-key");
     const button = document.getElementById("unlock-button");
     const message = document.getElementById("gate-msg");
+    const workshopTimeline = document.getElementById("workshop-timeline");
+    const workshopLogMsg = document.getElementById("workshop-log-msg");
+    const workshopAdminLoginForm = document.getElementById("workshop-admin-login");
+    const workshopAdminPassword = document.getElementById("workshop-admin-password");
+    const workshopAdminAuthMsg = document.getElementById("workshop-admin-auth-msg");
+    const workshopAdminTools = document.getElementById("workshop-admin-tools");
+    const workshopAdminLogout = document.getElementById("workshop-admin-logout");
+    const workshopAdminToolsMsg = document.getElementById("workshop-admin-tools-msg");
+    const workshopEntryForm = document.getElementById("workshop-entry-form");
+    const workshopEntryYear = document.getElementById("workshop-entry-year");
+    const workshopEntryDate = document.getElementById("workshop-entry-date");
+    const workshopEntryTitle = document.getElementById("workshop-entry-title");
+    const workshopEntryDescription = document.getElementById("workshop-entry-description");
+    const workshopEntrySubmit = document.getElementById("workshop-entry-submit");
+    const workshopEntryCancel = document.getElementById("workshop-entry-cancel");
+
+    const ADMIN_SESSION_KEY = "astro_ai_plus_admin_session";
+    const ADMIN_TOKEN_KEY = "astro_ai_plus_admin_token";
     let lockedUntil = 0;
+    let workshopEntries = [];
+    let editingWorkshopId = null;
 
     function remainingLockSeconds() {
       return Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
     }
+
+    function normalizeWorkshopEntry(entry) {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+
+      const year = Number(entry.year);
+      const dateLabel = String(entry.dateLabel || "").trim().toUpperCase();
+      const title = String(entry.title || "").trim();
+      const description = String(entry.description || "").trim();
+      const id = String(entry.id || "").trim();
+      if (!id || !Number.isInteger(year) || year < 1900 || year > 3000) {
+        return null;
+      }
+      if (!dateLabel || !title || !description) {
+        return null;
+      }
+
+      return {
+        id,
+        year,
+        dateLabel,
+        title,
+        description
+      };
+    }
+
+    function isAdminLoggedIn() {
+      return sessionStorage.getItem(ADMIN_SESSION_KEY) === "1" && Boolean(sessionStorage.getItem(ADMIN_TOKEN_KEY));
+    }
+
+    async function apiRequest(path, options = {}) {
+      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+      const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+
+      const response = await fetch(path, {
+        ...options,
+        headers
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(payload && payload.error ? payload.error : "Błąd żądania do serwera.");
+      }
+
+      return payload;
+    }
+
+    function clearWorkshopForm() {
+      editingWorkshopId = null;
+      workshopEntryForm.reset();
+      workshopEntrySubmit.textContent = "Dodaj wpis";
+      workshopEntryCancel.classList.add("hidden");
+    }
+
+    function startWorkshopEdit(entry) {
+      editingWorkshopId = entry.id;
+      workshopEntryYear.value = String(entry.year);
+      workshopEntryDate.value = entry.dateLabel;
+      workshopEntryTitle.value = entry.title;
+      workshopEntryDescription.value = entry.description;
+      workshopEntrySubmit.textContent = "Zapisz zmiany";
+      workshopEntryCancel.classList.remove("hidden");
+      workshopAdminToolsMsg.textContent = `Edytujesz wpis: ${entry.title}`;
+    }
+
+    function renderWorkshopTimeline() {
+      workshopTimeline.innerHTML = "";
+
+      if (workshopEntries.length === 0) {
+        workshopLogMsg.textContent = "Brak wpisów warsztatu.";
+        return;
+      }
+
+      workshopLogMsg.textContent = "";
+      for (const entry of workshopEntries) {
+        const card = document.createElement("article");
+        card.className = "timeline-entry";
+
+        const meta = document.createElement("p");
+        meta.className = "timeline-entry__meta";
+        meta.textContent = `${entry.year} - ${entry.dateLabel}`;
+
+        const heading = document.createElement("h3");
+        heading.textContent = entry.title;
+
+        const description = document.createElement("p");
+        description.textContent = entry.description;
+
+        card.appendChild(meta);
+        card.appendChild(heading);
+        card.appendChild(description);
+
+        if (isAdminLoggedIn()) {
+          const actions = document.createElement("div");
+          actions.className = "timeline-actions";
+
+          const editButton = document.createElement("button");
+          editButton.type = "button";
+          editButton.className = "timeline-action timeline-action--secondary";
+          editButton.textContent = "Edytuj";
+          editButton.addEventListener("click", () => startWorkshopEdit(entry));
+
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "timeline-action timeline-action--danger";
+          deleteButton.textContent = "Usuń";
+          deleteButton.addEventListener("click", async () => {
+            try {
+              const payload = await apiRequest(`/api/workshop-log/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+              workshopEntries = Array.isArray(payload.entries) ? payload.entries.map(normalizeWorkshopEntry).filter(Boolean) : workshopEntries;
+              if (editingWorkshopId === entry.id) {
+                clearWorkshopForm();
+              }
+              workshopAdminToolsMsg.textContent = `Usunięto wpis: ${entry.title}`;
+              renderWorkshopTimeline();
+            } catch (error) {
+              workshopAdminToolsMsg.textContent = error.message;
+            }
+          });
+
+          actions.appendChild(editButton);
+          actions.appendChild(deleteButton);
+          card.appendChild(actions);
+        }
+
+        workshopTimeline.appendChild(card);
+      }
+    }
+
+    function setWorkshopAdminUi(loggedIn) {
+      workshopAdminTools.classList.toggle("hidden", !loggedIn);
+      workshopAdminLoginForm.classList.toggle("hidden", loggedIn);
+      if (!loggedIn) {
+        workshopAdminToolsMsg.textContent = "";
+        clearWorkshopForm();
+      }
+      renderWorkshopTimeline();
+    }
+
+    async function loadWorkshopEntries() {
+      const payload = await apiRequest("/api/workshop-log", { method: "GET" });
+      const entries = Array.isArray(payload && payload.entries) ? payload.entries : [];
+      workshopEntries = entries.map(normalizeWorkshopEntry).filter(Boolean);
+      renderWorkshopTimeline();
+    }
+
+    workshopAdminLoginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      workshopAdminAuthMsg.textContent = "";
+
+      try {
+        const payload = await apiRequest("/api/admin/login", {
+          method: "POST",
+          body: JSON.stringify({
+            password: workshopAdminPassword.value.trim(),
+            source: "form"
+          })
+        });
+
+        sessionStorage.setItem(ADMIN_SESSION_KEY, "1");
+        sessionStorage.setItem(ADMIN_TOKEN_KEY, payload.token || "");
+        workshopAdminPassword.value = "";
+        workshopAdminAuthMsg.textContent = "Zalogowano jako admin.";
+        setWorkshopAdminUi(true);
+      } catch (error) {
+        workshopAdminAuthMsg.textContent = error.message;
+      }
+    });
+
+    workshopAdminLogout.addEventListener("click", async () => {
+      try {
+        await apiRequest("/api/admin/logout", { method: "POST" });
+      } catch {
+      }
+
+      sessionStorage.removeItem(ADMIN_SESSION_KEY);
+      sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+      workshopAdminAuthMsg.textContent = "Wylogowano.";
+      setWorkshopAdminUi(false);
+    });
+
+    workshopEntryCancel.addEventListener("click", () => {
+      clearWorkshopForm();
+      workshopAdminToolsMsg.textContent = "Anulowano edycję wpisu.";
+    });
+
+    workshopEntryForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      if (!isAdminLoggedIn()) {
+        workshopAdminToolsMsg.textContent = "Sesja admina wygasła. Zaloguj się ponownie.";
+        setWorkshopAdminUi(false);
+        return;
+      }
+
+      const entryPayload = normalizeWorkshopEntry({
+        id: editingWorkshopId || "temp-id",
+        year: workshopEntryYear.value,
+        dateLabel: workshopEntryDate.value,
+        title: workshopEntryTitle.value,
+        description: workshopEntryDescription.value
+      });
+
+      if (!entryPayload) {
+        workshopAdminToolsMsg.textContent = "Uzupełnij poprawnie wszystkie pola wpisu.";
+        return;
+      }
+
+      try {
+        if (editingWorkshopId) {
+          const payload = await apiRequest(`/api/workshop-log/${encodeURIComponent(editingWorkshopId)}`, {
+            method: "PUT",
+            body: JSON.stringify(entryPayload)
+          });
+          workshopEntries = Array.isArray(payload.entries) ? payload.entries.map(normalizeWorkshopEntry).filter(Boolean) : workshopEntries;
+          workshopAdminToolsMsg.textContent = `Zapisano wpis: ${entryPayload.title}`;
+        } else {
+          const payload = await apiRequest("/api/workshop-log", {
+            method: "POST",
+            body: JSON.stringify(entryPayload)
+          });
+          workshopEntries = Array.isArray(payload.entries) ? payload.entries.map(normalizeWorkshopEntry).filter(Boolean) : workshopEntries;
+          workshopAdminToolsMsg.textContent = `Dodano wpis: ${entryPayload.title}`;
+        }
+
+        clearWorkshopForm();
+        renderWorkshopTimeline();
+      } catch (error) {
+        if (error.message === "Brak autoryzacji.") {
+          sessionStorage.removeItem(ADMIN_SESSION_KEY);
+          sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+          setWorkshopAdminUi(false);
+        }
+        workshopAdminToolsMsg.textContent = error.message;
+      }
+    });
 
     function updateLockUi() {
       const seconds = remainingLockSeconds();
@@ -157,20 +459,25 @@
       sessionStorage.setItem(storageKey, String(Date.now() + SESSION_MINUTES * 60 * 1000));
     }
 
-    async function sha256(value) {
-      const bytes = new TextEncoder().encode(value);
-      const hash = await crypto.subtle.digest("SHA-256", bytes);
-      return [...new Uint8Array(hash)].map((x) => x.toString(16).padStart(2, "0")).join("");
-    }
-
     async function verifyPassword(value) {
-      if (!window.crypto || !window.crypto.subtle) {
-        message.textContent = "Brak wsparcia dla bezpiecznego sprawdzania hasła w tej przeglądarce.";
+      try {
+        const response = await fetch("/api/site-access/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: value })
+        });
+
+        if (!response.ok) {
+          message.textContent = "Błąd połączenia z serwerem.";
+          return false;
+        }
+
+        const payload = await response.json();
+        return Boolean(payload && payload.ok);
+      } catch {
+        message.textContent = "Błąd połączenia z serwerem.";
         return false;
       }
-
-      const givenHash = await sha256(value);
-      return givenHash === ACCESS_HASH;
     }
 
     function refreshState() {
@@ -235,6 +542,15 @@
       refreshState();
       updateLockUi();
     }, 500);
+
+    loadWorkshopEntries()
+      .then(() => {
+        setWorkshopAdminUi(isAdminLoggedIn());
+      })
+      .catch((error) => {
+        workshopLogMsg.textContent = error.message;
+      });
+
     refreshState();
   </script>
 </body>

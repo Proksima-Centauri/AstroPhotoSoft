@@ -159,6 +159,197 @@ body::before {
   margin: auto;
 }
 
+.workshop-log {
+  width: min(940px, calc(100% - 40px));
+  margin: 18px auto 20px;
+  padding: 34px 28px 28px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(5, 14, 31, 0.72), rgba(2, 7, 17, 0.56));
+  border: 1px solid rgba(128, 178, 255, 0.2);
+  box-shadow: inset 0 1px 0 rgba(180, 215, 255, 0.08), 0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
+.workshop-log__kicker {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: rgba(140, 188, 255, 0.82);
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.workshop-log h2 {
+  font-size: clamp(30px, 4.8vw, 48px);
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+  margin-bottom: 10px;
+  color: #f4f8ff;
+}
+
+.workshop-log__intro {
+  color: rgba(215, 227, 255, 0.72);
+  max-width: 700px;
+  line-height: 1.5;
+  margin-bottom: 22px;
+}
+
+.workshop-log__status {
+  color: rgba(215, 227, 253, 0.76);
+  margin-top: 12px;
+  min-height: 22px;
+}
+
+.timeline {
+  position: relative;
+  display: grid;
+  gap: 24px;
+  padding-left: 24px;
+}
+
+.timeline::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 8px;
+  left: 3px;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(255, 205, 100, 0.7), rgba(255, 205, 100, 0.12));
+}
+
+.timeline-entry {
+  position: relative;
+  max-width: 720px;
+}
+
+.timeline-entry::before {
+  content: "";
+  position: absolute;
+  left: -25px;
+  top: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffd46e;
+  box-shadow: 0 0 0 3px rgba(255, 212, 110, 0.14), 0 0 12px rgba(255, 212, 110, 0.55);
+}
+
+.timeline-entry__meta {
+  color: rgba(175, 203, 255, 0.92);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.timeline-entry h3 {
+  font-size: 34px;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+  color: #f6fbff;
+}
+
+.timeline-entry > p:not(.timeline-entry__meta) {
+  color: rgba(211, 225, 253, 0.72);
+  line-height: 1.55;
+}
+
+.timeline-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.timeline-action {
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 6px 10px;
+  font-weight: 600;
+  background: rgba(128, 183, 255, 0.16);
+  color: #ecf3ff;
+  cursor: pointer;
+}
+
+.timeline-action--secondary {
+  border-color: rgba(143, 197, 255, 0.4);
+  background: rgba(15, 35, 67, 0.62);
+}
+
+.timeline-action--danger {
+  border-color: rgba(255, 112, 112, 0.45);
+  background: rgba(105, 25, 25, 0.4);
+  color: #ffe3e3;
+}
+
+.workshop-admin {
+  margin-top: 20px;
+  border-top: 1px solid rgba(138, 180, 255, 0.18);
+  padding-top: 18px;
+}
+
+.workshop-admin h3 {
+  margin-bottom: 6px;
+  font-size: 20px;
+}
+
+.workshop-admin p {
+  color: rgba(215, 227, 253, 0.72);
+}
+
+.workshop-admin-form,
+.workshop-entry-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.workshop-admin input,
+.workshop-admin textarea,
+.workshop-admin button {
+  font: inherit;
+}
+
+.workshop-admin input,
+.workshop-admin textarea {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(151, 196, 255, 0.35);
+  background: rgba(1, 8, 20, 0.65);
+  color: #eff4ff;
+  padding: 10px 11px;
+}
+
+.workshop-admin textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.workshop-entry-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.workshop-admin button {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 700;
+  background: #7abfff;
+  color: #0a1b33;
+  cursor: pointer;
+}
+
+.workshop-admin button.secondary {
+  background: rgba(11, 25, 46, 0.62);
+  border-color: rgba(151, 196, 255, 0.35);
+  color: #eaf2ff;
+}
+
+.workshop-admin-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .about h2 {
   margin-bottom: 12px;
   font-size: 24px;
@@ -190,5 +381,22 @@ body::before {
 
   .grid {
     padding: 20px 18px 36px;
+  }
+
+  .workshop-log {
+    width: min(940px, calc(100% - 26px));
+    padding: 24px 16px 18px;
+  }
+
+  .workshop-log h2 {
+    font-size: clamp(28px, 12vw, 42px);
+  }
+
+  .timeline-entry h3 {
+    font-size: 29px;
+  }
+
+  .workshop-entry-row {
+    grid-template-columns: 1fr;
   }
 }

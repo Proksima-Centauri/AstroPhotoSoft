@@ -10,11 +10,24 @@ const DATA_DIR = path.join(ROOT_DIR, "protected");
 const VERSIONS_FILE = path.join(DATA_DIR, "versions.json");
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 const LOGIN_EVENTS_FILE = path.join(DATA_DIR, "login-events.json");
-const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "8b32f2fa6401eb1ec35d95d078201c9a0169de4297a7466daf3984cbda358a9b";
+const WORKSHOP_LOG_FILE = path.join(DATA_DIR, "workshop-log.json");
+const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || "").trim().toLowerCase();
+const SITE_ACCESS_HASH = String(process.env.SITE_ACCESS_HASH || ADMIN_PASSWORD_HASH).trim().toLowerCase();
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_LOGIN_EVENTS = 500;
 
+if (!/^[a-f0-9]{64}$/.test(ADMIN_PASSWORD_HASH)) {
+  process.stderr.write("ERROR: Ustaw poprawne ADMIN_PASSWORD_HASH (sha256 hex) w zmiennych srodowiskowych.\n");
+  process.exit(1);
+}
+
+if (!/^[a-f0-9]{64}$/.test(SITE_ACCESS_HASH)) {
+  process.stderr.write("ERROR: Ustaw poprawne SITE_ACCESS_HASH (sha256 hex) w zmiennych srodowiskowych.\n");
+  process.exit(1);
+}
+
 const sessions = new Map();
+const updateSubscribers = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -41,6 +54,30 @@ const defaultVersions = [
 const defaultSettings = {
   shortcut: "delta1/6"
 };
+
+const defaultWorkshopLog = [
+  {
+    id: "workshop-2026-08-12",
+    year: 2026,
+    dateLabel: "AUGUST 12",
+    title: "Four Platforms",
+    description: "Intel Macs join the family, GPU cleanup gets cleaner defaults, and denoise consistency now survives every saved profile."
+  },
+  {
+    id: "workshop-2026-08-10",
+    year: 2026,
+    dateLabel: "AUGUST 10",
+    title: "The Library Opens",
+    description: "Added a fresh starter pack, more adaptive presets, and smoother error messages when modules need attention."
+  },
+  {
+    id: "workshop-2026-08-07",
+    year: 2026,
+    dateLabel: "AUGUST 7",
+    title: "Stars for Everyone",
+    description: "Star removal is now free for everyone and star replacement installs automatically on first launch."
+  }
+];
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
@@ -73,6 +110,148 @@ function normalizeShortcut(value) {
   return shortcut;
 }
 
+function normalizeLoginSource(value) {
+  const source = String(value || "").trim().toLowerCase();
+  if (!source) {
+    return "unknown";
+  }
+
+  if (["form", "sequence", "launcher", "api"].includes(source)) {
+    return source;
+  }
+
+  return "other";
+}
+
+function normalizeLabel(value, fallback) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return fallback;
+  }
+
+  return normalized.slice(0, 64);
+}
+
+function normalizeProgramOs(value) {
+  const os = String(value || "").trim().toLowerCase();
+  if (!os || os === "*" || os === "all" || os === "any") {
+    return "any";
+  }
+
+  if (["mac", "macos", "osx", "darwin"].includes(os)) {
+    return "macos";
+  }
+
+  if (["win", "windows", "win32"].includes(os)) {
+    return "windows";
+  }
+
+  if (os === "linux") {
+    return "linux";
+  }
+
+  return "other";
+}
+
+function inferVersionTargetOs(version) {
+  if (!version || typeof version !== "object") {
+    return ["any"];
+  }
+
+  if (version.linuxOnly) {
+    return ["linux"];
+  }
+
+  const text = `${version.system || ""} ${version.format || ""} ${version.notes || ""}`.toLowerCase();
+  const targets = new Set();
+
+  if (/\bmac\b|macos|os x|darwin/.test(text)) {
+    targets.add("macos");
+  }
+  if (/\bwin\b|windows|win32/.test(text)) {
+    targets.add("windows");
+  }
+  if (/\blinux\b/.test(text)) {
+    targets.add("linux");
+  }
+
+  if (targets.size === 0) {
+    targets.add("any");
+  }
+
+  return [...targets];
+}
+
+function canProgramReceive(programOs, targets) {
+  if (!Array.isArray(targets) || targets.length === 0) {
+    return true;
+  }
+
+  if (programOs === "any") {
+    return true;
+  }
+
+  if (targets.includes("any")) {
+    return true;
+  }
+
+  return targets.includes(programOs);
+}
+
+function sendSseEvent(res, eventName, payload) {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function addUpdateSubscriber(programOs, res) {
+  const key = normalizeProgramOs(programOs);
+  const set = updateSubscribers.get(key) || new Set();
+  set.add(res);
+  updateSubscribers.set(key, set);
+}
+
+function removeUpdateSubscriber(programOs, res) {
+  const key = normalizeProgramOs(programOs);
+  const set = updateSubscribers.get(key);
+  if (!set) {
+    return;
+  }
+
+  set.delete(res);
+  if (set.size === 0) {
+    updateSubscribers.delete(key);
+  }
+}
+
+function broadcastVersionEvent(action, version) {
+  const normalizedVersion = normalizeVersion(version);
+  if (!normalizedVersion) {
+    return;
+  }
+
+  const targets = inferVersionTargetOs(normalizedVersion);
+  const payload = {
+    action,
+    targets,
+    version: normalizedVersion,
+    sentAt: new Date().toISOString()
+  };
+
+  for (const [programOs, subscribers] of updateSubscribers.entries()) {
+    if (!canProgramReceive(programOs, targets)) {
+      continue;
+    }
+
+    for (const client of subscribers) {
+      try {
+        sendSseEvent(client, "version-update", payload);
+      } catch {
+        removeUpdateSubscriber(programOs, client);
+      }
+    }
+  }
+}
+
 function normalizeVersion(entry) {
   if (!entry || typeof entry !== "object") {
     return null;
@@ -98,6 +277,40 @@ function normalizeVersion(entry) {
   };
 }
 
+function normalizeWorkshopEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const yearNumber = Number(entry.year);
+  const dateLabel = String(entry.dateLabel || "").trim().toUpperCase();
+  const title = String(entry.title || "").trim();
+  const description = String(entry.description || "").trim();
+  if (!Number.isInteger(yearNumber) || yearNumber < 1900 || yearNumber > 3000) {
+    return null;
+  }
+
+  if (!dateLabel || dateLabel.length > 32) {
+    return null;
+  }
+
+  if (!title || title.length > 120) {
+    return null;
+  }
+
+  if (!description || description.length > 600) {
+    return null;
+  }
+
+  return {
+    id: String(entry.id || `workshop-${Date.now()}-${crypto.randomUUID()}`),
+    year: yearNumber,
+    dateLabel,
+    title,
+    description
+  };
+}
+
 function loadVersions() {
   const loaded = safeReadJson(VERSIONS_FILE, defaultVersions);
   if (!Array.isArray(loaded)) {
@@ -114,6 +327,24 @@ function loadVersions() {
 
 function saveVersions(versions) {
   saveJson(VERSIONS_FILE, versions);
+}
+
+function loadWorkshopLog() {
+  const loaded = safeReadJson(WORKSHOP_LOG_FILE, defaultWorkshopLog);
+  if (!Array.isArray(loaded)) {
+    return [...defaultWorkshopLog];
+  }
+
+  const normalized = loaded.map(normalizeWorkshopEntry).filter(Boolean);
+  if (normalized.length === 0) {
+    return [...defaultWorkshopLog];
+  }
+
+  return normalized;
+}
+
+function saveWorkshopLog(entries) {
+  saveJson(WORKSHOP_LOG_FILE, entries);
 }
 
 function loadSettings() {
@@ -155,6 +386,10 @@ function ensureDataFiles() {
 
   if (!fs.existsSync(LOGIN_EVENTS_FILE)) {
     saveLoginEvents([]);
+  }
+
+  if (!fs.existsSync(WORKSHOP_LOG_FILE)) {
+    saveWorkshopLog(defaultWorkshopLog);
   }
 }
 
@@ -306,22 +541,27 @@ async function lookupGeo(ip) {
   }
 }
 
-async function recordLoginEvent(req, status) {
+async function recordLoginEvent(req, status, source = "unknown", clientInfo = {}) {
   const ip = getClientIp(req);
   const ua = String(req.headers["user-agent"] || "");
   const geo = await lookupGeo(ip);
   const now = new Date();
+  const headerOs = normalizeLabel(req.headers["x-client-os"], "");
+  const headerBrowser = normalizeLabel(req.headers["x-client-browser"], "");
+  const hintedOs = normalizeLabel(clientInfo.os, "");
+  const hintedBrowser = normalizeLabel(clientInfo.browser, "");
 
   const event = {
     id: `evt-${Date.now()}-${crypto.randomUUID()}`,
     timestamp: now.toISOString(),
     time: now.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }),
-    os: parseOs(ua),
-    browser: parseBrowser(ua),
+    os: headerOs || hintedOs || parseOs(ua),
+    browser: headerBrowser || hintedBrowser || parseBrowser(ua),
     city: geo.city,
     country: geo.country,
     ip,
-    status
+    status,
+    source: normalizeLoginSource(source)
   };
 
   const events = [event, ...loadLoginEvents()].slice(0, MAX_LOGIN_EVENTS);
@@ -335,9 +575,76 @@ function routeApi(req, res, requestUrl) {
     return;
   }
 
+  if (req.method === "POST" && requestUrl.pathname === "/api/site-access/login") {
+    readBody(req)
+      .then((body) => {
+        const password = String(body.password || "");
+        const ok = hashValue(password) === SITE_ACCESS_HASH;
+        sendJson(res, 200, { ok });
+      })
+      .catch((error) => sendJson(res, 400, { error: error.message }));
+    return;
+  }
+
   if (req.method === "GET" && requestUrl.pathname === "/api/versions") {
     const versions = loadVersions();
     sendJson(res, 200, { versions });
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/workshop-log") {
+    const entries = loadWorkshopLog();
+    sendJson(res, 200, { entries });
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/program/updates") {
+    const programOs = normalizeProgramOs(requestUrl.searchParams.get("os"));
+    const currentVersion = String(requestUrl.searchParams.get("currentVersion") || "").trim();
+    const versions = loadVersions();
+
+    const compatibleVersions = versions.filter((item) => canProgramReceive(programOs, inferVersionTargetOs(item)));
+    const latest = compatibleVersions[0] || null;
+    const hasUpdate = Boolean(latest && (!currentVersion || latest.version !== currentVersion));
+
+    sendJson(res, 200, {
+      os: programOs,
+      hasUpdate,
+      latestVersion: latest,
+      count: compatibleVersions.length
+    });
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/program/updates/stream") {
+    const programOs = normalizeProgramOs(requestUrl.searchParams.get("os"));
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive"
+    });
+    res.write(": connected\n\n");
+
+    addUpdateSubscriber(programOs, res);
+    sendSseEvent(res, "ready", {
+      os: programOs,
+      connectedAt: new Date().toISOString()
+    });
+
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(": ping\n\n");
+      } catch {
+        clearInterval(keepAlive);
+      }
+    }, 25_000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      removeUpdateSubscriber(programOs, res);
+    });
+
     return;
   }
 
@@ -345,9 +652,14 @@ function routeApi(req, res, requestUrl) {
     readBody(req)
       .then((body) => {
         const password = String(body.password || "");
+        const source = normalizeLoginSource(body.source);
+        const clientInfo = {
+          os: normalizeLabel(body.clientOs, ""),
+          browser: normalizeLabel(body.clientBrowser, "")
+        };
         const isValid = hashValue(password) === ADMIN_PASSWORD_HASH;
         if (!isValid) {
-          recordLoginEvent(req, "failed").catch(() => {
+          recordLoginEvent(req, "failed", source, clientInfo).catch(() => {
           });
           sendJson(res, 401, { error: "Bledne haslo admina." });
           return;
@@ -355,7 +667,7 @@ function routeApi(req, res, requestUrl) {
 
         const token = crypto.randomUUID();
         sessions.set(token, Date.now() + TOKEN_TTL_MS);
-        recordLoginEvent(req, "success").catch(() => {
+        recordLoginEvent(req, "success", source, clientInfo).catch(() => {
         });
         sendJson(res, 200, { token });
       })
@@ -422,6 +734,7 @@ function routeApi(req, res, requestUrl) {
         candidate.id = `release-${Date.now()}-${crypto.randomUUID()}`;
         const versions = [candidate, ...loadVersions()];
         saveVersions(versions);
+        broadcastVersionEvent("created", candidate);
         sendJson(res, 201, { versions });
       })
       .catch((error) => sendJson(res, 400, { error: error.message }));
@@ -452,6 +765,7 @@ function routeApi(req, res, requestUrl) {
 
         versions[index] = candidate;
         saveVersions(versions);
+        broadcastVersionEvent("updated", candidate);
         sendJson(res, 200, { versions });
       })
       .catch((error) => sendJson(res, 400, { error: error.message }));
@@ -466,6 +780,7 @@ function routeApi(req, res, requestUrl) {
 
     const id = decodeURIComponent(requestUrl.pathname.replace("/api/versions/", ""));
     const versions = loadVersions();
+    const removed = versions.find((item) => item.id === id) || null;
     const nextVersions = versions.filter((item) => item.id !== id);
     if (nextVersions.length === versions.length) {
       sendJson(res, 404, { error: "Wersja nie istnieje." });
@@ -473,7 +788,82 @@ function routeApi(req, res, requestUrl) {
     }
 
     saveVersions(nextVersions);
+    if (removed) {
+      broadcastVersionEvent("deleted", removed);
+    }
     sendJson(res, 200, { versions: nextVersions });
+    return;
+  }
+
+  if (req.method === "POST" && requestUrl.pathname === "/api/workshop-log") {
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { error: "Brak autoryzacji." });
+      return;
+    }
+
+    readBody(req)
+      .then((body) => {
+        const candidate = normalizeWorkshopEntry(body);
+        if (!candidate) {
+          sendJson(res, 400, { error: "Niepoprawne dane wpisu warsztatu." });
+          return;
+        }
+
+        candidate.id = `workshop-${Date.now()}-${crypto.randomUUID()}`;
+        const entries = [candidate, ...loadWorkshopLog()];
+        saveWorkshopLog(entries);
+        sendJson(res, 201, { entries });
+      })
+      .catch((error) => sendJson(res, 400, { error: error.message }));
+    return;
+  }
+
+  if (req.method === "PUT" && requestUrl.pathname.startsWith("/api/workshop-log/")) {
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { error: "Brak autoryzacji." });
+      return;
+    }
+
+    const id = decodeURIComponent(requestUrl.pathname.replace("/api/workshop-log/", ""));
+    readBody(req)
+      .then((body) => {
+        const candidate = normalizeWorkshopEntry({ ...body, id });
+        if (!candidate) {
+          sendJson(res, 400, { error: "Niepoprawne dane wpisu warsztatu." });
+          return;
+        }
+
+        const entries = loadWorkshopLog();
+        const index = entries.findIndex((item) => item.id === id);
+        if (index === -1) {
+          sendJson(res, 404, { error: "Wpis warsztatu nie istnieje." });
+          return;
+        }
+
+        entries[index] = candidate;
+        saveWorkshopLog(entries);
+        sendJson(res, 200, { entries });
+      })
+      .catch((error) => sendJson(res, 400, { error: error.message }));
+    return;
+  }
+
+  if (req.method === "DELETE" && requestUrl.pathname.startsWith("/api/workshop-log/")) {
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { error: "Brak autoryzacji." });
+      return;
+    }
+
+    const id = decodeURIComponent(requestUrl.pathname.replace("/api/workshop-log/", ""));
+    const entries = loadWorkshopLog();
+    const nextEntries = entries.filter((item) => item.id !== id);
+    if (nextEntries.length === entries.length) {
+      sendJson(res, 404, { error: "Wpis warsztatu nie istnieje." });
+      return;
+    }
+
+    saveWorkshopLog(nextEntries);
+    sendJson(res, 200, { entries: nextEntries });
     return;
   }
 

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "workshop-2026-08-12",
+    "year": 2026,
+    "dateLabel": "AUGUST 12",
+    "title": "Four Platforms",
+    "description": "Intel Macs join the family, GPU cleanup gets cleaner defaults, and denoise consistency now survives every saved profile."
+  },
+  {
+    "id": "workshop-2026-08-10",
+    "year": 2026,
+    "dateLabel": "AUGUST 10",
+    "title": "The Library Opens",
+    "description": "Added a fresh starter pack, more adaptive presets, and smoother error messages when modules need attention."
+  },
+  {
+    "id": "workshop-2026-08-07",
+    "year": 2026,
+    "dateLabel": "AUGUST 7",
+    "title": "Stars for Everyone",
+    "description": "Star removal is now free for everyone and star replacement installs automatically on first launch."
+  }
+]
