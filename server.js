@@ -12,17 +12,11 @@ const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 const LOGIN_EVENTS_FILE = path.join(DATA_DIR, "login-events.json");
 const WORKSHOP_LOG_FILE = path.join(DATA_DIR, "workshop-log.json");
 const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || "").trim().toLowerCase();
-const SITE_ACCESS_HASH = String(process.env.SITE_ACCESS_HASH || ADMIN_PASSWORD_HASH).trim().toLowerCase();
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_LOGIN_EVENTS = 500;
 
 if (!/^[a-f0-9]{64}$/.test(ADMIN_PASSWORD_HASH)) {
   process.stderr.write("ERROR: Ustaw poprawne ADMIN_PASSWORD_HASH (sha256 hex) w zmiennych srodowiskowych.\n");
-  process.exit(1);
-}
-
-if (!/^[a-f0-9]{64}$/.test(SITE_ACCESS_HASH)) {
-  process.stderr.write("ERROR: Ustaw poprawne SITE_ACCESS_HASH (sha256 hex) w zmiennych srodowiskowych.\n");
   process.exit(1);
 }
 
@@ -572,17 +566,6 @@ function routeApi(req, res, requestUrl) {
   if (req.method === "GET" && requestUrl.pathname === "/api/settings") {
     const settings = loadSettings();
     sendJson(res, 200, { shortcut: settings.shortcut });
-    return;
-  }
-
-  if (req.method === "POST" && requestUrl.pathname === "/api/site-access/login") {
-    readBody(req)
-      .then((body) => {
-        const password = String(body.password || "");
-        const ok = hashValue(password) === SITE_ACCESS_HASH;
-        sendJson(res, 200, { ok });
-      })
-      .catch((error) => sendJson(res, 400, { error: error.message }));
     return;
   }
 

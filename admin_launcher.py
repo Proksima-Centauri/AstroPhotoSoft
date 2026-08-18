@@ -52,7 +52,6 @@ class AdminLauncher(tk.Tk):
         self.port_var = tk.StringVar(value=env_values.get("PORT", "8080"))
         self.password_var = tk.StringVar(value="")
         self.new_admin_password_var = tk.StringVar(value="")
-        self.new_site_password_var = tk.StringVar(value="")
         self.shortcut_var = tk.StringVar(value="delta1/6")
         self.status_var = tk.StringVar(value="Server: stopped")
 
@@ -98,10 +97,7 @@ class AdminLauncher(tk.Tk):
         ttk.Label(auth, text="New admin password").grid(row=2, column=0, padx=6, pady=8, sticky="w")
         ttk.Entry(auth, textvariable=self.new_admin_password_var, width=26, show="*").grid(row=2, column=1, padx=6, pady=8, sticky="w")
 
-        ttk.Label(auth, text="New site access key").grid(row=3, column=0, padx=6, pady=8, sticky="w")
-        ttk.Entry(auth, textvariable=self.new_site_password_var, width=26, show="*").grid(row=3, column=1, padx=6, pady=8, sticky="w")
-
-        ttk.Button(auth, text="Save password hashes", command=self.save_password_hashes).grid(row=2, column=2, rowspan=2, padx=6, pady=8, sticky="ns")
+        ttk.Button(auth, text="Save password hash", command=self.save_password_hashes).grid(row=2, column=2, padx=6, pady=8, sticky="ns")
 
         events_box = ttk.LabelFrame(container, text="Login events")
         events_box.pack(fill="both", expand=True, pady=(10, 0))
@@ -252,26 +248,19 @@ class AdminLauncher(tk.Tk):
 
     def save_password_hashes(self) -> None:
         admin_password = self.new_admin_password_var.get().strip()
-        site_password = self.new_site_password_var.get().strip()
 
-        if not admin_password and not site_password:
-            messagebox.showwarning("Info", "Podaj nowe haslo admina lub nowy klucz dostepu.")
+        if not admin_password:
+            messagebox.showwarning("Info", "Podaj nowe haslo admina.")
             return
 
         updates: dict[str, str] = {}
         changed_labels: list[str] = []
 
-        if admin_password:
-            updates["ADMIN_PASSWORD_HASH"] = self.hash_password(admin_password)
-            changed_labels.append("ADMIN_PASSWORD_HASH")
-
-        if site_password:
-            updates["SITE_ACCESS_HASH"] = self.hash_password(site_password)
-            changed_labels.append("SITE_ACCESS_HASH")
+        updates["ADMIN_PASSWORD_HASH"] = self.hash_password(admin_password)
+        changed_labels.append("ADMIN_PASSWORD_HASH")
 
         self.update_env_values(updates)
         self.new_admin_password_var.set("")
-        self.new_site_password_var.set("")
         self.log(f"Updated: {', '.join(changed_labels)}")
 
         is_running = bool(self.process and self.process.poll() is None)

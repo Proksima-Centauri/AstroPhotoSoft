@@ -9,67 +9,12 @@
   <link rel="stylesheet" href="style.css">
   <style>
     .hidden { display: none !important; }
-    .gate {
-      position: fixed;
-      inset: 0;
-      display: grid;
-      place-items: center;
-      padding: 16px;
-      z-index: 20;
-      background: rgba(3, 4, 7, 0.76);
-      backdrop-filter: blur(4px);
-    }
-    .gate-panel {
-      width: min(420px, 92vw);
-      background: rgba(10, 17, 30, 0.86);
-      border: 1px solid rgba(238, 244, 255, 0.18);
-      border-radius: 14px;
-      padding: 24px;
-    }
-    .gate-panel h1 { margin: 0 0 10px; font-size: 1.3rem; }
-    .gate-panel p { margin: 0 0 16px; color: rgba(238, 244, 255, 0.8); }
-    .gate-panel input {
-      width: 100%;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid rgba(238, 244, 255, 0.25);
-      background: rgba(0, 0, 0, 0.25);
-      color: #eef4ff;
-      margin-bottom: 12px;
-    }
-    .gate-panel button {
-      width: 100%;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: none;
-      background: #66e6ff;
-      color: #031521;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    .gate-panel button:disabled {
-      opacity: 0.65;
-      cursor: not-allowed;
-    }
-    .gate-msg { margin-top: 10px; min-height: 20px; color: #ffb3b3; }
   </style>
 </head>
 <body>
   <canvas id="space"></canvas>
 
-  <div id="gate" class="gate hidden">
-    <main class="gate-panel">
-      <h1>Podaj klucz dostępu</h1>
-      <p>Sesja wygasa po 5 minutach.</p>
-      <form id="unlock-form">
-        <input id="access-key" type="password" autocomplete="off" placeholder="Klucz" required>
-        <button id="unlock-button" type="submit">Odblokuj stronę</button>
-      </form>
-      <div id="gate-msg" class="gate-msg" aria-live="polite"></div>
-    </main>
-  </div>
-
-  <div id="site-content" class="hidden">
+  <div id="site-content">
     <nav class="topbar">
       <div class="logo">🌌 AstroPhotoSoft</div>
       <div class="links">
@@ -86,7 +31,7 @@
     </header>
 
     <main class="grid">
-      <a class="card" href="apka1/index.html" aria-label="Przejdź do aplikacji Astro AI Plus">
+      <a class="card" href="https://proksima-centauri.github.io/Astro-Ai-Plus/" target="_blank" rel="noreferrer" aria-label="Przejdź do aplikacji Astro AI Plus">
         <img class="card-icon" src="favicon.png?v=130" alt="Ikona Astro AI Plus" width="128" height="128">
         <h3>Astro AI Plus</h3>
         <p>Narzędzie do obróbki astrofotografiicznej, analizy i z pomocą AI i tworzenia animacji 3D.</p>
@@ -139,21 +84,12 @@
     <section class="about">
       <h2>O mnie</h2>
       <p>AstroPhotoSoft to moje centrum projektów technologicznych i astrofotografii.</p>
+      <p>Email projektu: <a href="mailto:contact.astrophotosoft@gmail.com">contact.astrophotosoft@gmail.com</a></p>
     </section>
   </div>
 
   <script src="space.js"></script>
   <script>
-    const SESSION_MINUTES = 5;
-    const LOCKOUT_MS = 3000;
-    const storageKey = "site_unlock_until";
-
-    const gate = document.getElementById("gate");
-    const site = document.getElementById("site-content");
-    const form = document.getElementById("unlock-form");
-    const input = document.getElementById("access-key");
-    const button = document.getElementById("unlock-button");
-    const message = document.getElementById("gate-msg");
     const workshopTimeline = document.getElementById("workshop-timeline");
     const workshopLogMsg = document.getElementById("workshop-log-msg");
     const workshopAdminLoginForm = document.getElementById("workshop-admin-login");
@@ -172,13 +108,8 @@
 
     const ADMIN_SESSION_KEY = "astro_ai_plus_admin_session";
     const ADMIN_TOKEN_KEY = "astro_ai_plus_admin_token";
-    let lockedUntil = 0;
     let workshopEntries = [];
     let editingWorkshopId = null;
-
-    function remainingLockSeconds() {
-      return Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
-    }
 
     function normalizeWorkshopEntry(entry) {
       if (!entry || typeof entry !== "object") {
@@ -426,123 +357,6 @@
       }
     });
 
-    function updateLockUi() {
-      const seconds = remainingLockSeconds();
-      if (seconds > 0) {
-        button.disabled = true;
-        message.textContent = `Za dużo prób. Spróbuj ponownie za ${seconds} s.`;
-        return;
-      }
-
-      button.disabled = false;
-    }
-
-    function isUnlocked() {
-      const until = Number(sessionStorage.getItem(storageKey) || 0);
-      return Number.isFinite(until) && Date.now() < until;
-    }
-
-    function showGate(msg = "") {
-      gate.classList.remove("hidden");
-      site.classList.add("hidden");
-      message.textContent = msg;
-      input.focus();
-      updateLockUi();
-    }
-
-    function showSite() {
-      gate.classList.add("hidden");
-      site.classList.remove("hidden");
-    }
-
-    function setUnlock() {
-      sessionStorage.setItem(storageKey, String(Date.now() + SESSION_MINUTES * 60 * 1000));
-    }
-
-    async function verifyPassword(value) {
-      try {
-        const response = await fetch("/api/site-access/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: value })
-        });
-
-        if (!response.ok) {
-          message.textContent = "Błąd połączenia z serwerem.";
-          return false;
-        }
-
-        const payload = await response.json();
-        return Boolean(payload && payload.ok);
-      } catch {
-        message.textContent = "Błąd połączenia z serwerem.";
-        return false;
-      }
-    }
-
-    function refreshState() {
-      if (isUnlocked()) {
-        showSite();
-      } else {
-        sessionStorage.removeItem(storageKey);
-        showGate();
-      }
-    }
-
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-
-      if (Date.now() < lockedUntil) {
-        updateLockUi();
-        return;
-      }
-
-      message.textContent = "";
-
-      const provided = input.value.trim();
-      const ok = await verifyPassword(provided);
-      if (!ok) {
-        lockedUntil = Date.now() + LOCKOUT_MS;
-        updateLockUi();
-        if (!message.textContent) {
-          message.textContent = "Niepoprawny klucz.";
-        }
-        return;
-      }
-
-      input.value = "";
-      lockedUntil = 0;
-      button.disabled = false;
-      setUnlock();
-      showSite();
-    });
-
-    input.addEventListener("input", () => {
-      message.textContent = "";
-    });
-
-    document.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape") {
-        return;
-      }
-
-      if (!gate.classList.contains("hidden")) {
-        input.value = "";
-        if (Date.now() >= lockedUntil) {
-          message.textContent = "";
-        }
-        return;
-      }
-
-      sessionStorage.removeItem(storageKey);
-      showGate("Sesja została zamknięta klawiszem Esc.");
-    });
-
-    setInterval(() => {
-      refreshState();
-      updateLockUi();
-    }, 500);
-
     loadWorkshopEntries()
       .then(() => {
         setWorkshopAdminUi(isAdminLoggedIn());
@@ -550,8 +364,6 @@
       .catch((error) => {
         workshopLogMsg.textContent = error.message;
       });
-
-    refreshState();
   </script>
 </body>
 </html>
